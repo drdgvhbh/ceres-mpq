@@ -1,7 +1,8 @@
 use std::borrow::Cow;
 
 use byte_slice_cast::AsMutSliceOf;
-
+use implode::exploder::Exploder;
+use implode::symbol::DEFAULT_CODE_TABLE;
 use lazy_static::lazy_static;
 
 use super::consts::*;
@@ -191,9 +192,27 @@ pub fn decode_mpq_block(
         }
 
         if compression_type & COMPRESSION_PKWARE != 0 {
-            return Err(Error::UnsupportedCompression {
-                kind: "PKWare DCL".to_string(),
-            });
+            let mut decompressed = vec![0u8; uncompressed_size as usize];
+            let mut exploder = Exploder::new(&DEFAULT_CODE_TABLE);
+
+            let mut cpos: u32 = 1;
+            let len = buf.len();
+            let mut c = 0;
+
+            let mut buf_clone = buf.to_vec().clone();
+            while !exploder.ended {
+                let abuf = &mut buf_clone[cpos as usize..len];
+                let x = exploder.explode_block(abuf).unwrap();
+                cpos += x.0 as u32;
+                let bf = x.1;
+                for (d, s) in decompressed.iter_mut().zip(bf.iter()) {
+                    *d = *s;
+                    c += 1;
+                }
+            }
+
+            decompressed.resize(c as usize, 0);
+            buf = Cow::Owned(decompressed);
         }
 
         if compression_type & COMPRESSION_BZIP2 != 0 {

@@ -16,7 +16,6 @@
 //!
 //! * IMA ADPCM compression is unsupported. This is usually present on `.wav` files.
 //! * Huffman coding compression is unsupported. This is usually present on `.wav` files.
-//! * PKWare DCL compression is unsupported. However, I haven't seen any WC3 maps that use it.
 //! * Single-unit files are unsupported.
 //! * Checksums and file attributes are not checked or read.
 //!
