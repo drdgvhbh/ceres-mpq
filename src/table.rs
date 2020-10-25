@@ -1,5 +1,6 @@
 use std::io::Error as IoError;
 use std::io::{Read, Seek, Write};
+use std::sync::{Arc, RwLock};
 
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 
@@ -14,13 +15,20 @@ pub(crate) struct FileHashTable {
 }
 
 impl FileHashTable {
-    pub fn from_seeker<R>(seeker: &mut Seeker<R>) -> Result<FileHashTable, Error>
+    pub fn from_seeker<R>(seeker: Arc<RwLock<Seeker<R>>>) -> Result<FileHashTable, Error>
     where
         R: Read + Seek,
     {
-        let info = seeker.info().hash_table_info;
+        let info = seeker
+            .read()
+            .map_err(|_| Error::PoisonedRWLock)?
+            .info()
+            .hash_table_info;
         let expected_size = info.entries * u64::from(HASH_TABLE_ENTRY_SIZE);
-        let raw_data = seeker.read(info.offset, info.size)?;
+        let raw_data = seeker
+            .write()
+            .map_err(|_| Error::PoisonedRWLock)?
+            .read(info.offset, info.size)?;
         let decoded_data = decode_mpq_block(&raw_data, expected_size, Some(HASH_TABLE_KEY))?;
 
         let mut entries = Vec::with_capacity(info.entries as usize);
@@ -129,13 +137,20 @@ pub(crate) struct FileBlockTable {
 }
 
 impl FileBlockTable {
-    pub fn from_seeker<R>(seeker: &mut Seeker<R>) -> Result<FileBlockTable, Error>
+    pub fn from_seeker<R>(seeker: Arc<RwLock<Seeker<R>>>) -> Result<FileBlockTable, Error>
     where
         R: Read + Seek,
     {
-        let info = seeker.info().block_table_info;
+        let info = seeker
+            .read()
+            .map_err(|_| Error::PoisonedRWLock)?
+            .info()
+            .block_table_info;
         let expected_size = info.entries * u64::from(BLOCK_TABLE_ENTRY_SIZE);
-        let raw_data = seeker.read(info.offset, info.size)?;
+        let raw_data = seeker
+            .write()
+            .map_err(|_| Error::PoisonedRWLock)?
+            .read(info.offset, info.size)?;
         let decoded_data = decode_mpq_block(&raw_data, expected_size, Some(BLOCK_TABLE_KEY))?;
 
         let mut entries = Vec::with_capacity(info.entries as usize);
@@ -222,16 +237,25 @@ pub(crate) struct SectorOffsets {
 
 impl SectorOffsets {
     pub fn from_reader<R>(
-        seeker: &mut Seeker<R>,
+        seeker: Arc<RwLock<Seeker<R>>>,
         block_entry: &BlockEntry,
         encryption_key: Option<u32>,
     ) -> Result<SectorOffsets, Error>
     where
         R: Read + Seek,
     {
-        let sector_count =
-            sector_count_from_size(block_entry.uncompressed_size, seeker.info().sector_size);
-        let mut raw_data = seeker.read(block_entry.file_pos, (sector_count + 1) * 4)?;
+        let sector_count = sector_count_from_size(
+            block_entry.uncompressed_size,
+            seeker
+                .read()
+                .map_err(|_| Error::PoisonedRWLock)?
+                .info()
+                .sector_size,
+        );
+        let mut raw_data = seeker
+            .write()
+            .map_err(|_| Error::PoisonedRWLock)?
+            .read(block_entry.file_pos, (sector_count + 1) * 4)?;
 
         if let Some(encryption_key) = encryption_key {
             decrypt_mpq_block(&mut raw_data, encryption_key);

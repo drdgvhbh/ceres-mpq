@@ -16,6 +16,8 @@ pub enum Error {
     FileNotFound,
     #[error(display = "Compression type unsupported: {}", kind)]
     UnsupportedCompression { kind: String },
+    #[error(display = "RW Lock Poisoned")]
+    PoisonedRWLock,
 }
 
 impl From<IoError> for Error {

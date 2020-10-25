@@ -1,4 +1,5 @@
 use std::io::{Read, Seek};
+use std::sync::{Arc, RwLock};
 
 use super::error::*;
 use super::seeker::*;
@@ -12,7 +13,7 @@ use super::util::*;
 ///
 /// Will work on any reader that implements `Read + Seek`.
 pub struct Archive<R: Read + Seek> {
-    seeker: Seeker<R>,
+    seeker: Arc<RwLock<Seeker<R>>>,
     hash_table: FileHashTable,
     block_table: FileBlockTable,
 }
@@ -31,10 +32,10 @@ impl<R: Read + Seek> Archive<R> {
     ///
     /// No other operations will be performed.
     pub fn open(reader: R) -> Result<Archive<R>, Error> {
-        let mut seeker = Seeker::new(reader)?;
+        let seeker = Arc::new(RwLock::new(Seeker::new(reader)?));
 
-        let hash_table = FileHashTable::from_seeker(&mut seeker)?;
-        let block_table = FileBlockTable::from_seeker(&mut seeker)?;
+        let hash_table = FileHashTable::from_seeker(seeker.clone())?;
+        let block_table = FileBlockTable::from_seeker(seeker.clone())?;
 
         Ok(Archive {
             seeker,
@@ -50,7 +51,7 @@ impl<R: Read + Seek> Archive<R> {
     /// as different characters.
     ///
     /// Does not support single-unit files or uncompressed files.
-    pub fn read_file(&mut self, name: &str) -> Result<Vec<u8>, Error> {
+    pub fn read_file(&self, name: &str) -> Result<Vec<u8>, Error> {
         // find the hash entry and use it to find the block entry
         let hash_entry = self
             .hash_table
@@ -75,21 +76,30 @@ impl<R: Read + Seek> Archive<R> {
 
         // read the sector offsets
         let sector_offsets = SectorOffsets::from_reader(
-            &mut self.seeker,
+            self.seeker.clone(),
             block_entry,
             encryption_key.map(|k| k - 1),
         )?;
 
         // read out all the sectors
         let sector_range = sector_offsets.all();
-        let raw_data = self.seeker.read(
-            block_entry.file_pos + u64::from(sector_range.0),
-            u64::from(sector_range.1),
-        )?;
+        let raw_data = self
+            .seeker
+            .write()
+            .map_err(|_| Error::PoisonedRWLock)?
+            .read(
+                block_entry.file_pos + u64::from(sector_range.0),
+                u64::from(sector_range.1),
+            )?;
 
         let mut result = Vec::with_capacity(block_entry.uncompressed_size as usize);
 
-        let sector_size = self.seeker.info().sector_size;
+        let sector_size = self
+            .seeker
+            .read()
+            .map_err(|_| Error::PoisonedRWLock)?
+            .info()
+            .sector_size;
         let sector_count = sector_offsets.count();
         let first_sector_offset = sector_offsets.one(0).unwrap().0;
         for i in 0..sector_count {
@@ -126,7 +136,7 @@ impl<R: Read + Seek> Archive<R> {
 
     /// If the archive contains a `(listfile)`, this will method
     /// parse it and return a `Vec` containing all known filenames.
-    pub fn files(&mut self) -> Option<Vec<String>> {
+    pub fn files(&self) -> Option<Vec<String>> {
         let listfile = self.read_file("(listfile)").ok()?;
 
         let mut list = Vec::new();
@@ -154,21 +164,17 @@ impl<R: Read + Seek> Archive<R> {
     // Returns the start of the archive in the reader, which is the MPQ header,
     // relative to the beginning of the reader.
     pub fn start(&self) -> u64 {
-        self.seeker.info().header_offset
+        self.seeker.read().unwrap().info().header_offset
     }
 
     // Returns the end of the archive in the reader, relative to the beginning of the reader.
     pub fn end(&self) -> u64 {
-        self.seeker.info().header_offset + self.seeker.info().archive_size
+        self.seeker.read().unwrap().info().header_offset
+            + self.seeker.read().unwrap().info().archive_size
     }
 
     // Returns the size of the archive as specified in the MPQ header.
     pub fn size(&self) -> u64 {
-        self.seeker.info().archive_size
-    }
-
-    // Returns a mutable reference to the underlying reader.
-    pub fn reader(&mut self) -> &mut R {
-        self.seeker.reader()
+        self.seeker.read().unwrap().info().archive_size
     }
 }
